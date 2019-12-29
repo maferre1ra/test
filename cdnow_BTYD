@@ -1,0 +1,238 @@
+---
+title: "online_retail_case"
+author: "Mauricio Ferreira"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(BTYD)
+library(BTYDplus)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+```
+
+```{r}
+df.import<- read.csv("C:/Users/Qvista/Documents/Customer Lifetime Value/Online Retail3.csv", header=TRUE, sep="," )
+```
+
+```{r}
+
+df.import<- na.omit(df.import) %>%
+   filter(Country == "Germany") %>%
+  select(CustomerID, InvoiceDate, Sales)
+
+df.import$InvoiceDate <- as.Date(df.import$InvoiceDate,
+  format = "%y/%m/%d")
+df.import$CustomerID <- as.integer(df.import$CustomerID)
+df.import$Sales <- as.numeric(as.character(df.import$Sales))
+df.import<- na.omit(df.import)
+
+
+cohort_tbl <- df.import %>%                  # assign id to cohort, get from data
+  group_by(CustomerID) %>%               # group all users together
+  separate(InvoiceDate, c( "year", "month", "day"), sep = "-") %>%
+  mutate(first = min(year)) %>%   # for every user, find the first period
+  group_by(first, year) %>%       # group by this first period + the other periods
+  summarise(users = n()) %>%             # for each combination, count the number of users
+  spread(year, users)                      # and make columns with period names 
+
+cohort_ind <- df.import %>%                  # assign id to cohort, get from data
+  group_by(CustomerID) %>%               # group all users together
+  separate(InvoiceDate, c( "year", "month", "day"), sep = "-") %>%
+  mutate(first = min(year)) %>%
+  unite("date", year:day, sep="-")
+
+cohort_ind$date = ymd(cohort_ind$date)
+
+#cohort_ind$date <- as.Date(cohort_ind$date, format = "%y/%m/%d")
+
+cohort_2001<- cohort_ind %>%
+  filter(first == "2001") %>%
+  select(cust = CustomerID, date = date, sales = Sales)
+colnames(cohort_2001) = c("cust", "date", "sales")
+
+cohort_2002<- cohort_ind %>%
+  filter(first == "2002") %>%
+  select(cust = CustomerID, date = date, sales = Sales)
+colnames(cohort_2002) = c("cust", "date", "sales")
+
+cohort_2003<- cohort_ind %>%
+  filter(first == "2003") %>%
+  select(cust = CustomerID, date = date, sales = Sales)
+colnames(cohort_2003) = c("cust", "date", "sales")
+
+cohort_2001 = as.data.frame(cohort_2001)
+cohort_2002 = as.data.frame(cohort_2002)
+cohort_2003 = as.data.frame(cohort_2003)
+
+# for (i in 1:nrow(df)){
+#   df$Date  <- strsplit(as.character(df$InvoiceDate)," ")[[1]]
+# }
+
+```
+
+
+This function returns an event log
+with only one transaction per customer per day, with the total sum of their
+spending for that day as the sales number.
+
+```{r}
+cdnowElog <- system.file("data/cdnowElog.csv", package = "BTYD")
+elog <- dc.ReadLines(cdnowElog, cust.idx = 2,
+date.idx = 3, sales.idx = 5)
+#df<-cdnowElog
+
+#elog<-cohort_2003
+
+elog$date <- as.Date(elog$date, "%Y%m%d");
+elog[1:3,]
+
+elog <- dc.MergeTransactionsOnSameDate(elog);
+end.of.cal.period <- as.Date("1997-09-30")
+#end.of.cal.period <- as.Date("2012-12-20")
+elog.cal <- elog[which(elog$date <= end.of.cal.period), ]
+split.data <- dc.SplitUpElogForRepeatTrans(elog.cal);
+clean.elog <- split.data$repeat.trans.elog;
+freq.cbt <- dc.CreateFreqCBT(clean.elog);
+freq.cbt[1:3,1:5]
+tot.cbt <- dc.CreateFreqCBT(elog)
+cal.cbt <- dc.MergeCustomers(tot.cbt, freq.cbt)
+birth.periods <- split.data$cust.data$birth.per
+last.dates <- split.data$cust.data$last.date
+cal.cbs.dates <- data.frame(birth.periods, last.dates,
+end.of.cal.period)
+cal.cbs <- dc.BuildCBSFromCBTAndDates(cal.cbt, cal.cbs.dates,
+per="week")
+```
+
+
+
+```{r}
+params <- pnbd.EstimateParameters(cal.cbs);
+params
+
+LL <- pnbd.cbs.LL(params, cal.cbs);
+LL
+
+```
+
+```{r}
+p.matrix <- c(params, LL);
+for (i in 1:2){
+params <- pnbd.EstimateParameters(cal.cbs, params);
+LL <- pnbd.cbs.LL(params, cal.cbs);
+p.matrix.row <- c(params, LL);
+p.matrix <- rbind(p.matrix, p.matrix.row);
+}
+colnames(p.matrix) <- c("r", "alpha", "s", "beta", "LL");
+rownames(p.matrix) <- 1:3;
+p.matrix;
+
+```
+
+```{r}
+#NUMBER WE EXPECT A NEW CONSUMER TO MAKE IN 1 YEAR FROM NOW
+pnbd.Expectation(params, t=52);
+```
+
+```{r}
+id = "1516"
+cal.cbs[id,]
+
+#get probabilities of being alive at end of the period
+x <- cal.cbs[, "x"]
+t.x <- cal.cbs[, "t.x"]
+T.cal <- cal.cbs[, "T.cal"]
+
+#number of transactions we expect a customer to make in the holdout period
+trans.star=pnbd.ConditionalExpectedTransactions(params, T.star = 72,
+x, t.x, T.cal)
+# [1] 25.46
+
+#probability the consumer is alive
+trans.prob=pnbd.PAlive(params, x, t.x, T.cal)
+
+trans.cbind= cbind(cal.cbs,trans.star,trans.prob)
+
+```
+
+```{r}
+for (i in seq(10, 25, 5)){
+cond.expectation <- pnbd.ConditionalExpectedTransactions(
+params, T.star = 52, x = i,
+t.x = 20, T.cal = 39) 
+cat ("x:",i,"\t Expectation:",cond.expectation, fill = TRUE)
+}
+
+```
+
+
+```{r}
+pnbd.PlotFrequencyInCalibration(params, cal.cbs, 7)
+```
+
+
+```{r}
+elog <- dc.SplitUpElogForRepeatTrans(elog)$repeat.trans.elog;
+x.star <- rep(0, nrow(cal.cbs));
+cal.cbs <- cbind(cal.cbs, x.star);
+elog.custs <- elog$cust;
+for (i in 1:nrow(cal.cbs)){
+current.cust <- rownames(cal.cbs)[i]
+tot.cust.trans <- length(which(elog.custs == current.cust))
+cal.trans <- cal.cbs[i, "x"]
+cal.cbs[i, "x.star"] <- tot.cust.trans - cal.trans
+}
+cal.cbs[1:10,]
+
+```
+
+```{r}
+T.star <- 39 # length of the holdout period
+censor <- 7 # This censor serves the same purpose described above
+x.star <- cal.cbs[,"x.star"]
+comp <- pnbd.PlotFreqVsConditionalExpectedFrequency(params, T.star,
+cal.cbs, x.star, censor)
+```
+
+
+```{r}
+tot.cbt <- dc.CreateFreqCBT(elog)
+# ...Completed Freq CBT
+d.track.data <- rep(0, 7 * 78)
+origin <- as.Date("1997-01-01")
+for (i in colnames(tot.cbt)){
+date.index <- difftime(as.Date(i), origin) + 1;
+d.track.data[date.index] <- sum(tot.cbt[,i]);
+}
+w.track.data <- rep(0, 78)
+for (j in 1:78){
+w.track.data[j] <- sum(d.track.data[(j*7-6):(j*7)])
+}
+
+
+```
+
+```{r}
+T.cal <- cal.cbs[,"T.cal"]
+T.tot <- 78
+n.periods.final <- 78
+inc.tracking <- pnbd.PlotTrackingInc(params, T.cal,
+T.tot, w.track.data,
+n.periods.final)
+
+```
+
+```{r}
+inc.tracking[,1:39]
+
+cum.tracking.data <- cumsum(w.track.data)
+cum.tracking <- pnbd.PlotTrackingCum(params, T.cal,
+T.tot, cum.tracking.data,
+n.periods.final)
+
+```
